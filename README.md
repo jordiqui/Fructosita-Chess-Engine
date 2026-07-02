@@ -4,10 +4,6 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![UCI](https://img.shields.io/badge/protocol-UCI-informational.svg)](https://official-stockfish.github.io/docs/stockfish-wiki/UCI-%26-Commands.html)
 
-> ⚠️ **Nota para Antonio:** reemplaza `TU_USUARIO` en el badge de arriba por
-> tu usuario real de GitHub en cuanto subas el repo, o el badge de CI no
-> va a cargar. Es la única línea que hay que tocar.
-
 Motor de ajedrez UCI, desarrollado desde cero en Rust — sin clonar ni derivar
 código de otros motores. Las técnicas usadas (bitboards, alfa-beta, PVS,
 null-move pruning, LMR, formato Polyglot, NNUE más adelante) son de dominio
