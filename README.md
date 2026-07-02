@@ -41,8 +41,7 @@ código fuente bajo la misma licencia.
 - ✅ Protocolo UCI: `uci`, `isready`, `position`, `go`, `stop`, `setoption
   name Hash/OwnBook/BookFile value <...>`, `d`, `perft`, `ucinewgame`, `quit`
 
-**Fuerza estimada actual:** aproximadamente **2400-2600 Elo** (subiendo desde
-~2300-2500 gracias a SEE). Antonio lo probó dos veces contra Krevete (2331
+**Fuerza estimada actual:** aproximadamente **2200-2300 Elo** (subiendo gracias a SEE). Lo pobré dos veces contra Kreveta (2331
 Elo): una derrota de 96 jugadas y otra de 54 — ambas "de cerca", coherente
 con un motor competitivo en ese rango que todavía puede afinarse más.
 
