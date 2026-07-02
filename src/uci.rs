@@ -1,0 +1,352 @@
+//! Bucle del protocolo UCI (Universal Chess Interface).
+//!
+//! La búsqueda corre en un hilo separado del bucle principal de lectura de
+//! stdin: así, si llega un comando `stop` mientras el motor está pensando,
+//! el hilo principal puede procesarlo de inmediato (activando una bandera
+//! atómica que el hilo de búsqueda revisa periódicamente) en vez de quedar
+//! bloqueado esperando a que termine la búsqueda.
+
+use crate::board::Board;
+use crate::book::{Book, BookRng};
+use crate::movegen::{find_move, generate_legal_moves};
+use crate::perft::perft_divide;
+use crate::search::{self, SearchLimits};
+use crate::tt::TranspositionTable;
+use crate::types::Color;
+use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+pub const ENGINE_NAME: &str = "Fructosita 1.0 Aldosa";
+pub const ENGINE_AUTHOR: &str = "Antonio";
+const DEFAULT_HASH_MB: usize = 64;
+
+struct EngineState {
+    board: Board,
+    /// Hashes de todas las posiciones desde el inicio de la partida hasta
+    /// la posición actual, inclusive. Se usa para detectar repeticiones.
+    game_history: Vec<u64>,
+    tt: Option<TranspositionTable>,
+    stop_flag: Arc<AtomicBool>,
+    search_thread: Option<JoinHandle<TranspositionTable>>,
+    book: Option<Book>,
+    own_book: bool,
+    book_rng: BookRng,
+}
+
+impl EngineState {
+    fn new() -> Self {
+        let board = Board::start_pos();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x2545F4914F6CDD1D);
+        EngineState {
+            game_history: vec![board.hash],
+            board,
+            tt: Some(TranspositionTable::new(DEFAULT_HASH_MB)),
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            search_thread: None,
+            book: None,
+            own_book: true,
+            book_rng: BookRng::new(seed),
+        }
+    }
+}
+
+/// Si hay una búsqueda en curso, la detiene y espera a que termine,
+/// recuperando la tabla de transposición para poder reutilizarla. Se llama
+/// antes de procesar `position`, `go`, `ucinewgame` o `setoption`, para
+/// evitar que un comando pise a una búsqueda que aún no ha terminado.
+fn ensure_search_finished(state: &mut EngineState) {
+    if let Some(handle) = state.search_thread.take() {
+        state.stop_flag.store(true, Ordering::Relaxed);
+        if let Ok(tt) = handle.join() {
+            state.tt = Some(tt);
+        }
+        state.stop_flag.store(false, Ordering::Relaxed);
+    }
+}
+
+pub fn run() {
+    let stdin = io::stdin();
+    let mut state = EngineState::new();
+
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let first_word = line.split_whitespace().next().unwrap_or("");
+        match first_word {
+            "uci" => {
+                println!("id name {ENGINE_NAME}");
+                println!("id author {ENGINE_AUTHOR}");
+                println!("option name Hash type spin default {DEFAULT_HASH_MB} min 1 max 4096");
+                println!("option name OwnBook type check default true");
+                println!("option name BookFile type string default <empty>");
+                println!("uciok");
+            }
+            "isready" => println!("readyok"),
+            "ucinewgame" => {
+                ensure_search_finished(&mut state);
+                state.board = Board::start_pos();
+                state.game_history = vec![state.board.hash];
+                if let Some(tt) = state.tt.as_mut() {
+                    tt.clear();
+                }
+            }
+            "position" => {
+                ensure_search_finished(&mut state);
+                let rest = line["position".len()..].trim();
+                handle_position(rest, &mut state);
+            }
+            "go" => {
+                ensure_search_finished(&mut state);
+                handle_go(line, &mut state);
+            }
+            "stop" => state.stop_flag.store(true, Ordering::Relaxed),
+            "setoption" => {
+                ensure_search_finished(&mut state);
+                handle_setoption(line, &mut state);
+            }
+            "d" => println!("{}", state.board),
+            "perft" => {
+                ensure_search_finished(&mut state);
+                let depth: u32 = line
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1);
+                run_perft_command(&state.board, depth);
+            }
+            "quit" => {
+                state.stop_flag.store(true, Ordering::Relaxed);
+                break;
+            }
+            "ponderhit" => {}
+            _ => {} // Comandos no reconocidos se ignoran, según el protocolo UCI.
+        }
+        io::stdout().flush().ok();
+    }
+
+    if let Some(handle) = state.search_thread.take() {
+        state.stop_flag.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+    }
+}
+
+fn handle_position(rest: &str, state: &mut EngineState) {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let mut idx = 0;
+
+    let mut board = if tokens.first() == Some(&"startpos") {
+        idx += 1;
+        Board::start_pos()
+    } else if tokens.first() == Some(&"fen") {
+        idx += 1;
+        let fen_start = idx;
+        while idx < tokens.len() && tokens[idx] != "moves" {
+            idx += 1;
+        }
+        let fen = tokens[fen_start..idx].join(" ");
+        match Board::from_fen(&fen) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("info string FEN inválido ({e}); usando posición inicial");
+                Board::start_pos()
+            }
+        }
+    } else {
+        Board::start_pos()
+    };
+
+    let mut history = vec![board.hash];
+    if tokens.get(idx) == Some(&"moves") {
+        idx += 1;
+        for mv_str in &tokens[idx..] {
+            match find_move(&board, mv_str) {
+                Some(mv) => {
+                    board = board.make_move(mv);
+                    history.push(board.hash);
+                }
+                None => {
+                    eprintln!("info string movimiento desconocido o ilegal: {mv_str}");
+                    break;
+                }
+            }
+        }
+    }
+
+    state.board = board;
+    state.game_history = history;
+}
+
+fn handle_setoption(line: &str, state: &mut EngineState) {
+    // Formato UCI: "setoption name <Nombre> value <Valor>"
+    let Some(name_pos) = line.find("name ") else { return };
+    let rest = &line[name_pos + 5..];
+    let Some(value_pos) = rest.find(" value ") else { return };
+    let name = rest[..value_pos].trim();
+    let value = rest[value_pos + 7..].trim();
+
+    if name.eq_ignore_ascii_case("Hash") {
+        if let Ok(mb) = value.parse::<usize>() {
+            if let Some(tt) = state.tt.as_mut() {
+                tt.resize(mb.max(1));
+            }
+        }
+    } else if name.eq_ignore_ascii_case("OwnBook") {
+        state.own_book = value.eq_ignore_ascii_case("true");
+    } else if name.eq_ignore_ascii_case("BookFile") {
+        if value.is_empty() || value == "<empty>" {
+            state.book = None;
+        } else {
+            match Book::load(value) {
+                Ok(book) => state.book = Some(book),
+                Err(e) => {
+                    eprintln!("info string {e}");
+                    state.book = None;
+                }
+            }
+        }
+    }
+}
+
+fn handle_go(line: &str, state: &mut EngineState) {
+    let mut it = line.split_whitespace();
+    it.next(); // consume "go"
+    let tokens: Vec<&str> = it.collect();
+
+    if tokens.first() == Some(&"perft") {
+        let depth: u32 = tokens.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+        run_perft_command(&state.board, depth);
+        return;
+    }
+
+    let legal = generate_legal_moves(&state.board);
+    if legal.is_empty() {
+        println!("bestmove 0000");
+        return;
+    }
+
+    if state.own_book {
+        if let Some(book) = &state.book {
+            let candidates = book.probe(&state.board);
+            if let Some(mv) = crate::book::choose_weighted(&candidates, &mut state.book_rng) {
+                println!("info string jugada de libro ({} candidata{})", candidates.len(), if candidates.len() == 1 { "" } else { "s" });
+                println!("bestmove {mv}");
+                return;
+            }
+        }
+    }
+
+    let mut wtime: Option<i64> = None;
+    let mut btime: Option<i64> = None;
+    let mut winc: i64 = 0;
+    let mut binc: i64 = 0;
+    let mut movestogo: Option<i64> = None;
+    let mut movetime: Option<i64> = None;
+    let mut max_depth: i32 = 64;
+    let mut infinite = false;
+
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i] {
+            "wtime" => { wtime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
+            "btime" => { btime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
+            "winc" => { winc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 1; }
+            "binc" => { binc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 1; }
+            "movestogo" => { movestogo = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
+            "movetime" => { movetime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
+            "depth" => { max_depth = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(64); i += 1; }
+            "infinite" => infinite = true,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let now = Instant::now();
+    let (soft, hard) = compute_time_budget(state.board.side_to_move, wtime, btime, winc, binc, movestogo, movetime, infinite);
+    let limits = SearchLimits {
+        max_depth,
+        soft_deadline: now + soft,
+        hard_deadline: now + hard,
+    };
+
+    state.stop_flag.store(false, Ordering::Relaxed);
+    let stop_flag = Arc::clone(&state.stop_flag);
+    let board = state.board;
+    let game_history = state.game_history.clone();
+    let mut tt = state.tt.take().unwrap_or_else(|| TranspositionTable::new(DEFAULT_HASH_MB));
+
+    let handle = thread::spawn(move || {
+        let (best_move, _score) = search::iterative_deepening(&board, limits, &mut tt, game_history, &stop_flag);
+        println!("bestmove {best_move}");
+        io::stdout().flush().ok();
+        tt
+    });
+    state.search_thread = Some(handle);
+}
+
+/// Calcula (límite blando, límite duro) de tiempo para la búsqueda.
+/// El límite blando es cuándo dejamos de *empezar* una nueva profundidad de
+/// profundización iterativa; el límite duro es un tope de seguridad que
+/// `negamax`/`quiescence` revisan periódicamente para cortar de inmediato.
+fn compute_time_budget(
+    side: Color,
+    wtime: Option<i64>,
+    btime: Option<i64>,
+    winc: i64,
+    binc: i64,
+    movestogo: Option<i64>,
+    movetime: Option<i64>,
+    infinite: bool,
+) -> (Duration, Duration) {
+    if infinite {
+        return (Duration::from_secs(3600), Duration::from_secs(3600));
+    }
+    if let Some(mt) = movetime {
+        let ms = (mt - 50).max(10) as u64;
+        return (Duration::from_millis(ms), Duration::from_millis(ms));
+    }
+
+    let (time_left, inc) = match side {
+        Color::White => (wtime, winc),
+        Color::Black => (btime, binc),
+    };
+
+    if let Some(t) = time_left {
+        let moves_left = movestogo.unwrap_or(30).max(1);
+        let safety = 50i64;
+        let usable = (t - safety).max(10);
+        let base = usable / moves_left + (inc * 8) / 10;
+        let soft = base.clamp(10, usable);
+        let hard = (soft * 3).min(usable);
+        return (Duration::from_millis(soft as u64), Duration::from_millis(hard as u64));
+    }
+
+    // Sin ningún control de tiempo especificado (uso manual desde terminal):
+    // un valor por defecto razonable para no pensar indefinidamente.
+    (Duration::from_millis(5000), Duration::from_millis(5000))
+}
+
+fn run_perft_command(board: &Board, depth: u32) {
+    let start = std::time::Instant::now();
+    let mut total = 0u64;
+    for (mv, count) in perft_divide(board, depth) {
+        println!("{mv}: {count}");
+        total += count;
+    }
+    let elapsed = start.elapsed().as_secs_f64();
+    println!();
+    println!("Nodes searched: {total}");
+    println!("Time: {elapsed:.3}s");
+}
