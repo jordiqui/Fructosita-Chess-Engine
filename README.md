@@ -4,6 +4,10 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![UCI](https://img.shields.io/badge/protocol-UCI-informational.svg)](https://official-stockfish.github.io/docs/stockfish-wiki/UCI-%26-Commands.html)
 
+Fructosita nació el 2 de julio de 2026 como un proyecto personal para aprender el desarrollo de motores de ajedrez desde cero. Su nombre proviene de mi trabajo de tesis relacionado con la fructosa y refleja la intención de construir un motor con identidad propia, evolucionando desde una evaluación clásica hasta una arquitectura basada en NNUE.
+
+"Ese motor de ajedrez lo estoy construyendo yo."...y Claude como asesor
+
 Motor de ajedrez UCI, desarrollado desde cero en Rust — sin clonar ni derivar
 código de otros motores. Las técnicas usadas (bitboards, alfa-beta, PVS,
 null-move pruning, LMR, formato Polyglot, NNUE más adelante) son de dominio
