@@ -2,7 +2,10 @@
 name = "fructosita"
 version = "1.0.0"
 edition = "2024"
-authors = ["Antonio"]
+version = "1.2.0"
+edition = "2021"
+15dd82a (Add multithreaded search improvements)
+authors = ["Antonio Espinosa"]
 description = "Fructosita - motor de ajedrez UCI original, desarrollado desde cero en Rust."
 license = "GPL-3.0-or-later"
 repository = "https://github.com/TU_USUARIO/fructosita"
