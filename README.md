@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/Fructosita.png" width="180" alt="Fructosita Chess Engine">
+</p>
+
 # Fructosita 🍬♟️
 
 [![CI](https://github.com/josantesbo/Fructosita-Chess-Engine/actions/workflows/ci.yml/badge.svg)](https://github.com/josantesbo/Fructosita-Chess-Engine/actions/workflows/ci.yml)
