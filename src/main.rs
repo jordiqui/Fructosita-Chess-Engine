@@ -7,6 +7,7 @@
 //!     fructosita perft <profundidad> ["<fen>"]
 //!     fructosita perft 5
 //!     fructosita perft 4 "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
+//!     fructosita bench [depth <profundidad>]
 //!     fructosita selfplay <plies> [movetime_ms] [threads]
 //!         Hace que el motor juegue contra sí mismo N medio-movimientos,
 //!         verificando en cada paso que el movimiento elegido es legal.
@@ -45,6 +46,10 @@ fn main() {
         run_cli_perft(&args[2..]);
         return;
     }
+    if args.len() > 1 && args[1] == "bench" {
+        run_bench(&args[2..]);
+        return;
+    }
     if args.len() > 1 && args[1] == "selfplay" {
         run_selfplay(&args[2..]);
         return;
@@ -55,6 +60,79 @@ fn main() {
     }
 
     uci::run();
+}
+
+fn run_bench(args: &[String]) {
+    let depth: i32 = if args.first().map(|s| s.as_str()) == Some("depth") {
+        args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5)
+    } else {
+        5
+    };
+    let hash_mb = 64usize;
+    let threads = 1usize;
+    let fens = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
+        "r3k2r/ppp2ppp/2n5/3q4/3P4/2N1BQ2/PPP2PPP/R3K2R w KQkq - 0 12",
+        "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+        "4k3/6P1/8/8/8/8/8/4K3 w - - 0 1",
+        "8/8/8/3k4/8/3K4/4P3/8 w - - 0 1",
+    ];
+
+    let start = Instant::now();
+    let mut total = search::SearchStatsSnapshot::default();
+    let mut signature =
+        0x9E37_79B9_7F4A_7C15u64 ^ depth as u64 ^ ((hash_mb as u64) << 32) ^ threads as u64;
+
+    for fen in fens {
+        let board = match Board::from_fen(fen) {
+            Ok(board) => board,
+            Err(err) => {
+                eprintln!("FEN inválido en bench: {err}");
+                std::process::exit(1);
+            }
+        };
+        let tt = std::sync::Arc::new(TranspositionTable::new(hash_mb));
+        let (best_move, score, stats) =
+            search::search_fixed_depth_with_stats(board, depth, tt, vec![board.hash]);
+        total.nodes += stats.nodes;
+        total.qnodes += stats.qnodes;
+        total.tt_probes += stats.tt_probes;
+        total.tt_hits += stats.tt_hits;
+        total.tt_cutoffs += stats.tt_cutoffs;
+        total.beta_cutoffs += stats.beta_cutoffs;
+        total.null_move_attempts += stats.null_move_attempts;
+        total.null_move_cutoffs += stats.null_move_cutoffs;
+        total.lmr_attempts += stats.lmr_attempts;
+        total.lmr_researches += stats.lmr_researches;
+        total.pvs_researches += stats.pvs_researches;
+        signature = signature.rotate_left(7)
+            ^ board.hash
+            ^ ((best_move.from as u64) << 8 | best_move.to as u64)
+            ^ ((score as i64 as u64) << 1)
+            ^ stats.nodes;
+    }
+
+    let time_ms = start.elapsed().as_millis().max(1);
+    let nps = (total.nodes as u128 * 1000) / time_ms;
+    println!("bench positions {}", fens.len());
+    println!("bench depth {depth}");
+    println!("bench nodes {}", total.nodes);
+    println!("bench time_ms {time_ms}");
+    println!("bench nps {nps}");
+    println!("bench hash_mb {hash_mb}");
+    println!("bench threads {threads}");
+    println!("bench qnodes {}", total.qnodes);
+    println!("bench tt_probes {}", total.tt_probes);
+    println!("bench tt_hits {}", total.tt_hits);
+    println!("bench tt_cutoffs {}", total.tt_cutoffs);
+    println!("bench beta_cutoffs {}", total.beta_cutoffs);
+    println!("bench null_move_attempts {}", total.null_move_attempts);
+    println!("bench null_move_cutoffs {}", total.null_move_cutoffs);
+    println!("bench lmr_attempts {}", total.lmr_attempts);
+    println!("bench lmr_researches {}", total.lmr_researches);
+    println!("bench pvs_researches {}", total.pvs_researches);
+    println!("bench signature {signature:016x}");
 }
 
 fn run_cli_perft(args: &[String]) {
@@ -92,12 +170,18 @@ fn run_selfplay(args: &[String]) {
     let tt = std::sync::Arc::new(TranspositionTable::new(32));
     let stop = std::sync::Arc::new(AtomicBool::new(false));
 
-    println!("Auto-juego: {plies} medios-movimientos, {movetime_ms}ms por jugada, {threads} hilo(s)\n");
+    println!(
+        "Auto-juego: {plies} medios-movimientos, {movetime_ms}ms por jugada, {threads} hilo(s)\n"
+    );
 
     for ply in 1..=plies {
         let legal = generate_legal_moves(&board);
         if legal.is_empty() {
-            let result = if board.in_check(board.side_to_move) { "jaque mate" } else { "ahogado" };
+            let result = if board.in_check(board.side_to_move) {
+                "jaque mate"
+            } else {
+                "ahogado"
+            };
             println!("Partida terminada en el medio-movimiento {ply}: {result}");
             break;
         }
@@ -108,10 +192,20 @@ fn run_selfplay(args: &[String]) {
             soft_deadline: now + Duration::from_millis(movetime_ms),
             hard_deadline: now + Duration::from_millis(movetime_ms * 3),
         };
-        let (mv, score) = search::lazy_smp_search(board, limits, tt.clone(), history.clone(), stop.clone(), threads);
+        let (mv, score) = search::lazy_smp_search(
+            board,
+            limits,
+            tt.clone(),
+            history.clone(),
+            stop.clone(),
+            threads,
+        );
 
         if !legal.contains(&mv) {
-            panic!("¡BUG CRÍTICO! El motor devolvió un movimiento ilegal: {mv} en posición {}", board.to_fen());
+            panic!(
+                "¡BUG CRÍTICO! El motor devolvió un movimiento ilegal: {mv} en posición {}",
+                board.to_fen()
+            );
         }
 
         board = board.make_move(mv);
@@ -160,8 +254,11 @@ fn run_bench_attacks() {
     }
     let magic_elapsed = start.elapsed();
     let calls = (ITERS as u64) * (occupancies.len() as u64) * 64 * 2;
-    println!("magic:  {calls} llamadas en {:.3}s ({:.1}M llamadas/s) [acc={acc}]",
-        magic_elapsed.as_secs_f64(), calls as f64 / magic_elapsed.as_secs_f64() / 1e6);
+    println!(
+        "magic:  {calls} llamadas en {:.3}s ({:.1}M llamadas/s) [acc={acc}]",
+        magic_elapsed.as_secs_f64(),
+        calls as f64 / magic_elapsed.as_secs_f64() / 1e6
+    );
 
     let start = Instant::now();
     let mut acc: u64 = 0;
@@ -174,8 +271,11 @@ fn run_bench_attacks() {
         }
     }
     let ray_elapsed = start.elapsed();
-    println!("rayos:  {calls} llamadas en {:.3}s ({:.1}M llamadas/s) [acc={acc}]",
-        ray_elapsed.as_secs_f64(), calls as f64 / ray_elapsed.as_secs_f64() / 1e6);
+    println!(
+        "rayos:  {calls} llamadas en {:.3}s ({:.1}M llamadas/s) [acc={acc}]",
+        ray_elapsed.as_secs_f64(),
+        calls as f64 / ray_elapsed.as_secs_f64() / 1e6
+    );
 
     let ratio = ray_elapsed.as_secs_f64() / magic_elapsed.as_secs_f64();
     println!("magic es {ratio:.2}x respecto a rayos en este micro-benchmark aislado");

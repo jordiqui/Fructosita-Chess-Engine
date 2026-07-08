@@ -255,7 +255,11 @@ impl MagicEntry {
 }
 
 fn build_table(sq: Square, magic: u64, is_rook: bool) -> MagicEntry {
-    let mask = if is_rook { rook_mask(sq) } else { bishop_mask(sq) };
+    let mask = if is_rook {
+        rook_mask(sq)
+    } else {
+        bishop_mask(sq)
+    };
     let bits = mask.count_ones();
     let shift = 64 - bits;
     let size = 1usize << bits;
@@ -278,7 +282,12 @@ fn build_table(sq: Square, magic: u64, is_rook: bool) -> MagicEntry {
         );
         table[index] = attacks;
     }
-    MagicEntry { mask, magic, shift, table }
+    MagicEntry {
+        mask,
+        magic,
+        shift,
+        table,
+    }
 }
 
 pub struct MagicTables {
@@ -288,8 +297,12 @@ pub struct MagicTables {
 
 impl MagicTables {
     fn new() -> Self {
-        let rook = (0u8..64).map(|sq| build_table(sq, ROOK_MAGICS[sq as usize], true)).collect();
-        let bishop = (0u8..64).map(|sq| build_table(sq, BISHOP_MAGICS[sq as usize], false)).collect();
+        let rook = (0u8..64)
+            .map(|sq| build_table(sq, ROOK_MAGICS[sq as usize], true))
+            .collect();
+        let bishop = (0u8..64)
+            .map(|sq| build_table(sq, BISHOP_MAGICS[sq as usize], false))
+            .collect();
         MagicTables { rook, bishop }
     }
 
@@ -400,7 +413,12 @@ mod tests {
     #[test]
     fn corner_and_center_bit_counts_match_known_values() {
         // Esquinas: 12 bits para torre, 6 para alfil.
-        for &sq in &[crate::types::A1, crate::types::H1, crate::types::A8, crate::types::H8] {
+        for &sq in &[
+            crate::types::A1,
+            crate::types::H1,
+            crate::types::A8,
+            crate::types::H8,
+        ] {
             assert_eq!(rook_mask(sq).count_ones(), 12);
             assert_eq!(bishop_mask(sq).count_ones(), 6);
         }

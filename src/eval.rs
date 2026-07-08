@@ -99,7 +99,12 @@ fn pst() -> &'static Pst {
 fn game_phase(board: &Board) -> i32 {
     let mut phase = 0;
     for color in [Color::White, Color::Black] {
-        for pt in [PieceType::Knight, PieceType::Bishop, PieceType::Rook, PieceType::Queen] {
+        for pt in [
+            PieceType::Knight,
+            PieceType::Bishop,
+            PieceType::Rook,
+            PieceType::Queen,
+        ] {
             let count = count_bits(board.pieces[color.index()][pt.index()]) as i32;
             phase += count * PHASE_WEIGHT[pt.index()];
         }
@@ -116,7 +121,11 @@ fn material_and_pst(board: &Board, color: Color) -> (i32, i32) {
         let value = piece_value(pt);
         while bb != EMPTY {
             let sq = pop_lsb(&mut bb);
-            let idx = if color == Color::White { sq } else { mirror(sq) };
+            let idx = if color == Color::White {
+                sq
+            } else {
+                mirror(sq)
+            };
             mg += value + p.mg[pt.index()][idx as usize];
             eg += value + p.eg[pt.index()][idx as usize];
         }
@@ -169,8 +178,12 @@ fn pawn_structure(board: &Board, color: Color) -> (i32, i32) {
         }
         if count_on_file > 0 {
             let mut adjacent: u64 = 0;
-            if file > 0 { adjacent |= FILE_A << (file - 1); }
-            if file < 7 { adjacent |= FILE_A << (file + 1); }
+            if file > 0 {
+                adjacent |= FILE_A << (file - 1);
+            }
+            if file < 7 {
+                adjacent |= FILE_A << (file + 1);
+            }
             if own_pawns & adjacent == EMPTY {
                 mg -= 12;
                 eg -= 16;
@@ -206,7 +219,11 @@ fn pawn_structure(board: &Board, color: Color) -> (i32, i32) {
             }
         }
         if !blocked {
-            let advance = if color == Color::White { rank } else { 7 - rank };
+            let advance = if color == Color::White {
+                rank
+            } else {
+                7 - rank
+            };
             let bonus = (advance as i32) * (advance as i32) * 3;
             mg += bonus / 2;
             eg += bonus;
@@ -263,7 +280,11 @@ pub fn evaluate(board: &Board) -> i32 {
     let score = (mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE;
 
     // Convertimos primero a la perspectiva de quien mueve...
-    let relative = if board.side_to_move == Color::White { score } else { -score };
+    let relative = if board.side_to_move == Color::White {
+        score
+    } else {
+        -score
+    };
 
     // ...y SOLO DESPUÉS sumamos el bono de tempo: así queda garantizado que
     // beneficia a quien tiene el turno sin importar su color. Sumarlo antes
@@ -283,7 +304,10 @@ mod tests {
         let score = evaluate(&b);
         // Simétrica salvo el bono de tempo: debe estar cerca de 0, nunca
         // desbalanceada como si faltara una pieza (~esto sería cientos de cp).
-        assert!(score.abs() < 50, "eval de posición inicial fuera de rango: {score}");
+        assert!(
+            score.abs() < 50,
+            "eval de posición inicial fuera de rango: {score}"
+        );
     }
 
     #[test]
@@ -320,11 +344,17 @@ mod tests {
                 c
             }
         };
-        let placement: Vec<String> =
-            ranks.iter().rev().map(|r| r.chars().map(swap_case).collect()).collect();
+        let placement: Vec<String> = ranks
+            .iter()
+            .rev()
+            .map(|r| r.chars().map(swap_case).collect())
+            .collect();
         let turn = if parts[1] == "w" { "b" } else { "w" };
-        let castling: String =
-            if parts[2] == "-" { "-".to_string() } else { parts[2].chars().map(swap_case).collect() };
+        let castling: String = if parts[2] == "-" {
+            "-".to_string()
+        } else {
+            parts[2].chars().map(swap_case).collect()
+        };
         let ep = if parts[3] == "-" {
             "-".to_string()
         } else {
