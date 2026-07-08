@@ -43,3 +43,6 @@ jobs:
 
       - name: Verificar auto-juego (estabilidad de extremo a extremo)
         run: ./target/release/fructosita selfplay 40 50
+
+      - name: Verificar harness de partidas/regresión
+        run: scripts/run_match_smoke.sh
