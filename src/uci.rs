@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-pub const ENGINE_NAME: &str = "Fructosita 1.0 Aldosa";
+pub const ENGINE_NAME: &str = "Fructosita 1.2.0 Aldosa";
 pub const ENGINE_AUTHOR: &str = "Antonio";
 const DEFAULT_HASH_MB: usize = 64;
 const DEFAULT_THREADS: usize = 1;
@@ -196,9 +196,13 @@ fn handle_position(rest: &str, state: &mut EngineState) {
 
 fn handle_setoption(line: &str, state: &mut EngineState) {
     // Formato UCI: "setoption name <Nombre> value <Valor>"
-    let Some(name_pos) = line.find("name ") else { return };
+    let Some(name_pos) = line.find("name ") else {
+        return;
+    };
     let rest = &line[name_pos + 5..];
-    let Some(value_pos) = rest.find(" value ") else { return };
+    let Some(value_pos) = rest.find(" value ") else {
+        return;
+    };
     let name = rest[..value_pos].trim();
     let value = rest[value_pos + 7..].trim();
 
@@ -275,13 +279,34 @@ fn handle_go(line: &str, state: &mut EngineState) {
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
-            "wtime" => { wtime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
-            "btime" => { btime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
-            "winc" => { winc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 1; }
-            "binc" => { binc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0); i += 1; }
-            "movestogo" => { movestogo = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
-            "movetime" => { movetime = tokens.get(i + 1).and_then(|s| s.parse().ok()); i += 1; }
-            "depth" => { max_depth = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(64); i += 1; }
+            "wtime" => {
+                wtime = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 1;
+            }
+            "btime" => {
+                btime = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 1;
+            }
+            "winc" => {
+                winc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "binc" => {
+                binc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                i += 1;
+            }
+            "movestogo" => {
+                movestogo = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 1;
+            }
+            "movetime" => {
+                movetime = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                i += 1;
+            }
+            "depth" => {
+                max_depth = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(64);
+                i += 1;
+            }
             "infinite" => infinite = true,
             _ => {}
         }
@@ -289,7 +314,16 @@ fn handle_go(line: &str, state: &mut EngineState) {
     }
 
     let now = Instant::now();
-    let (soft, hard) = compute_time_budget(state.board.side_to_move, wtime, btime, winc, binc, movestogo, movetime, infinite);
+    let (soft, hard) = compute_time_budget(
+        state.board.side_to_move,
+        wtime,
+        btime,
+        winc,
+        binc,
+        movestogo,
+        movetime,
+        infinite,
+    );
     let limits = SearchLimits {
         max_depth,
         soft_deadline: now + soft,
@@ -304,7 +338,8 @@ fn handle_go(line: &str, state: &mut EngineState) {
     let threads = state.threads;
 
     let handle = thread::spawn(move || {
-        let (best_move, _score) = search::lazy_smp_search(board, limits, tt, game_history, stop_flag, threads);
+        let (best_move, _score) =
+            search::lazy_smp_search(board, limits, tt, game_history, stop_flag, threads);
         println!("bestmove {best_move}");
         io::stdout().flush().ok();
     });
@@ -315,6 +350,7 @@ fn handle_go(line: &str, state: &mut EngineState) {
 /// El límite blando es cuándo dejamos de *empezar* una nueva profundidad de
 /// profundización iterativa; el límite duro es un tope de seguridad que
 /// `negamax`/`quiescence` revisan periódicamente para cortar de inmediato.
+#[allow(clippy::too_many_arguments)]
 fn compute_time_budget(
     side: Color,
     wtime: Option<i64>,
@@ -345,7 +381,10 @@ fn compute_time_budget(
         let base = usable / moves_left + (inc * 8) / 10;
         let soft = base.clamp(10, usable);
         let hard = (soft * 3).min(usable);
-        return (Duration::from_millis(soft as u64), Duration::from_millis(hard as u64));
+        return (
+            Duration::from_millis(soft as u64),
+            Duration::from_millis(hard as u64),
+        );
     }
 
     // Sin ningún control de tiempo especificado (uso manual desde terminal):

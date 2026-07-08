@@ -12,8 +12,12 @@ use crate::board::Board;
 use crate::moves::{Move, MoveKind};
 use crate::types::*;
 
-const PROMOTION_PIECES: [PieceType; 4] =
-    [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight];
+const PROMOTION_PIECES: [PieceType; 4] = [
+    PieceType::Queen,
+    PieceType::Rook,
+    PieceType::Bishop,
+    PieceType::Knight,
+];
 
 fn generate_pawn_moves(board: &Board, moves: &mut Vec<Move>) {
     let us = board.side_to_move;
@@ -23,8 +27,11 @@ fn generate_pawn_moves(board: &Board, moves: &mut Vec<Move>) {
     let t = tables();
 
     let mut pawns = board.pieces[us.index()][PieceType::Pawn.index()];
-    let (push_delta, start_rank, promo_rank): (i32, u8, u8) =
-        if us == Color::White { (8, 1, 7) } else { (-8, 6, 0) };
+    let (push_delta, start_rank, promo_rank): (i32, u8, u8) = if us == Color::White {
+        (8, 1, 7)
+    } else {
+        (-8, 6, 0)
+    };
 
     while pawns != EMPTY {
         let from = pop_lsb(&mut pawns);
@@ -77,7 +84,11 @@ fn generate_knight_moves(board: &Board, moves: &mut Vec<Move>) {
         let mut targets = t.knight_attacks(from) & !own_occ;
         while targets != EMPTY {
             let to = pop_lsb(&mut targets);
-            let kind = if get_bit(enemy_occ, to) { MoveKind::Capture } else { MoveKind::Quiet };
+            let kind = if get_bit(enemy_occ, to) {
+                MoveKind::Capture
+            } else {
+                MoveKind::Quiet
+            };
             moves.push(Move::new(from, to, kind));
         }
     }
@@ -92,7 +103,11 @@ fn generate_king_moves(board: &Board, moves: &mut Vec<Move>) {
     let mut targets = t.king_attacks(from) & !own_occ;
     while targets != EMPTY {
         let to = pop_lsb(&mut targets);
-        let kind = if get_bit(enemy_occ, to) { MoveKind::Capture } else { MoveKind::Quiet };
+        let kind = if get_bit(enemy_occ, to) {
+            MoveKind::Capture
+        } else {
+            MoveKind::Quiet
+        };
         moves.push(Move::new(from, to, kind));
     }
 }
@@ -115,7 +130,11 @@ fn generate_sliding_moves(board: &Board, piece: PieceType, moves: &mut Vec<Move>
         let mut targets = attacks & !own_occ;
         while targets != EMPTY {
             let to = pop_lsb(&mut targets);
-            let kind = if get_bit(enemy_occ, to) { MoveKind::Capture } else { MoveKind::Quiet };
+            let kind = if get_bit(enemy_occ, to) {
+                MoveKind::Capture
+            } else {
+                MoveKind::Quiet
+            };
             moves.push(Move::new(from, to, kind));
         }
     }
@@ -127,12 +146,31 @@ fn generate_castling(board: &Board, moves: &mut Vec<Move>) {
     let enemy = us.opposite();
 
     let (king_home, kingside_right, queenside_right, f, g, d, c, b) = match us {
-        Color::White => (E1, board.castling.white_kingside, board.castling.white_queenside, F1, G1, D1, C1, B1),
-        Color::Black => (E8, board.castling.black_kingside, board.castling.black_queenside, F8, G8, D8, C8, B8),
+        Color::White => (
+            E1,
+            board.castling.white_kingside,
+            board.castling.white_queenside,
+            F1,
+            G1,
+            D1,
+            C1,
+            B1,
+        ),
+        Color::Black => (
+            E8,
+            board.castling.black_kingside,
+            board.castling.black_queenside,
+            F8,
+            G8,
+            D8,
+            C8,
+            B8,
+        ),
     };
 
     if kingside_right
-        && !get_bit(occ, f) && !get_bit(occ, g)
+        && !get_bit(occ, f)
+        && !get_bit(occ, g)
         && !board.is_square_attacked(king_home, enemy)
         && !board.is_square_attacked(f, enemy)
         && !board.is_square_attacked(g, enemy)
@@ -141,7 +179,9 @@ fn generate_castling(board: &Board, moves: &mut Vec<Move>) {
     }
 
     if queenside_right
-        && !get_bit(occ, d) && !get_bit(occ, c) && !get_bit(occ, b)
+        && !get_bit(occ, d)
+        && !get_bit(occ, c)
+        && !get_bit(occ, b)
         && !board.is_square_attacked(king_home, enemy)
         && !board.is_square_attacked(d, enemy)
         && !board.is_square_attacked(c, enemy)
@@ -175,7 +215,9 @@ pub fn generate_legal_moves(board: &Board) -> Vec<Move> {
 /// Busca, entre los movimientos legales, el que corresponde a la notación
 /// UCI dada (p. ej. "e2e4", "e7e8q"). Útil para procesar `position ... moves ...`.
 pub fn find_move(board: &Board, uci_str: &str) -> Option<Move> {
-    generate_legal_moves(board).into_iter().find(|mv| mv.to_string() == uci_str)
+    generate_legal_moves(board)
+        .into_iter()
+        .find(|mv| mv.to_string() == uci_str)
 }
 
 #[cfg(test)]

@@ -22,6 +22,54 @@ pub const MATE_SCORE: i32 = 30_000;
 pub const MAX_PLY: usize = 128;
 const INFINITY: i32 = 32_000;
 
+#[derive(Debug, Default)]
+pub struct SearchStats {
+    pub nodes: AtomicU64,
+    pub qnodes: AtomicU64,
+    pub tt_probes: AtomicU64,
+    pub tt_hits: AtomicU64,
+    pub tt_cutoffs: AtomicU64,
+    pub beta_cutoffs: AtomicU64,
+    pub null_move_attempts: AtomicU64,
+    pub null_move_cutoffs: AtomicU64,
+    pub lmr_attempts: AtomicU64,
+    pub lmr_researches: AtomicU64,
+    pub pvs_researches: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SearchStatsSnapshot {
+    pub nodes: u64,
+    pub qnodes: u64,
+    pub tt_probes: u64,
+    pub tt_hits: u64,
+    pub tt_cutoffs: u64,
+    pub beta_cutoffs: u64,
+    pub null_move_attempts: u64,
+    pub null_move_cutoffs: u64,
+    pub lmr_attempts: u64,
+    pub lmr_researches: u64,
+    pub pvs_researches: u64,
+}
+
+impl SearchStats {
+    pub fn snapshot(&self) -> SearchStatsSnapshot {
+        SearchStatsSnapshot {
+            nodes: self.nodes.load(Ordering::Relaxed),
+            qnodes: self.qnodes.load(Ordering::Relaxed),
+            tt_probes: self.tt_probes.load(Ordering::Relaxed),
+            tt_hits: self.tt_hits.load(Ordering::Relaxed),
+            tt_cutoffs: self.tt_cutoffs.load(Ordering::Relaxed),
+            beta_cutoffs: self.beta_cutoffs.load(Ordering::Relaxed),
+            null_move_attempts: self.null_move_attempts.load(Ordering::Relaxed),
+            null_move_cutoffs: self.null_move_cutoffs.load(Ordering::Relaxed),
+            lmr_attempts: self.lmr_attempts.load(Ordering::Relaxed),
+            lmr_researches: self.lmr_researches.load(Ordering::Relaxed),
+            pvs_researches: self.pvs_researches.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct SearchLimits {
     pub max_depth: i32,
@@ -30,7 +78,7 @@ pub struct SearchLimits {
 }
 
 struct SearchContext<'a> {
-    nodes: &'a AtomicU64,
+    stats: &'a SearchStats,
     seldepth: u8,
     stop: &'a AtomicBool,
     hard_deadline: Instant,
@@ -68,7 +116,7 @@ impl<'a> SearchContext<'a> {
     }
 
     fn check_time(&mut self) {
-        if self.nodes.load(Ordering::Relaxed) % 2048 == 0
+        if self.stats.nodes.load(Ordering::Relaxed) % 2048 == 0
             && (self.stop.load(Ordering::Relaxed) || Instant::now() >= self.hard_deadline)
         {
             self.stopped = true;
@@ -130,12 +178,22 @@ fn is_repetition_or_fifty(board: &Board, ctx: &SearchContext) -> bool {
     false
 }
 
-fn move_score(mv: &Move, board: &Board, tt_move: Option<Move>, ply: usize, ctx: &SearchContext) -> i32 {
+fn move_score(
+    mv: &Move,
+    board: &Board,
+    tt_move: Option<Move>,
+    ply: usize,
+    ctx: &SearchContext,
+) -> i32 {
     if tt_move == Some(*mv) {
         return 2_000_000;
     }
     if let Some(promo) = mv.promotion() {
-        let base = if promo == PieceType::Queen { 1_800_000 } else { 100_000 };
+        let base = if promo == PieceType::Queen {
+            1_800_000
+        } else {
+            100_000
+        };
         return base + if mv.is_capture() { 10_000 } else { 0 };
     }
     if mv.is_capture() {
@@ -193,12 +251,19 @@ fn filter_and_order_quiescence_moves(moves: Vec<Move>, board: &Board, in_check: 
     scored.into_iter().map(|(m, _)| m).collect()
 }
 
-fn quiescence(board: &Board, mut alpha: i32, beta: i32, ply: usize, ctx: &mut SearchContext) -> i32 {
+fn quiescence(
+    board: &Board,
+    mut alpha: i32,
+    beta: i32,
+    ply: usize,
+    ctx: &mut SearchContext,
+) -> i32 {
     ctx.check_time();
     if ctx.stopped {
         return 0;
     }
-    ctx.nodes.fetch_add(1, Ordering::Relaxed);
+    ctx.stats.qnodes.fetch_add(1, Ordering::Relaxed);
+    ctx.stats.nodes.fetch_add(1, Ordering::Relaxed);
     if ply as u8 > ctx.seldepth {
         ctx.seldepth = ply as u8;
     }
@@ -283,14 +348,16 @@ fn negamax(
         return quiescence(board, alpha, beta, ply, ctx);
     }
 
-    ctx.nodes.fetch_add(1, Ordering::Relaxed);
+    ctx.stats.nodes.fetch_add(1, Ordering::Relaxed);
     if ply as u8 > ctx.seldepth {
         ctx.seldepth = ply as u8;
     }
 
+    ctx.stats.tt_probes.fetch_add(1, Ordering::Relaxed);
     let tt_probe = ctx.tt.probe(board.hash);
     let mut tt_move = None;
     if let Some(entry) = &tt_probe {
+        ctx.stats.tt_hits.fetch_add(1, Ordering::Relaxed);
         tt_move = entry.best_move;
         if entry.depth as i32 >= depth && ply > 0 {
             let score = score_from_tt(entry.score, ply);
@@ -300,6 +367,7 @@ fn negamax(
                 TTFlag::UpperBound => score <= alpha,
             };
             if usable {
+                ctx.stats.tt_cutoffs.fetch_add(1, Ordering::Relaxed);
                 return score;
             }
         }
@@ -310,22 +378,36 @@ fn negamax(
     // haga, así que podamos esta rama. Se evita en jaque, en profundidades
     // bajas, y sin material mayor propio (riesgo de zugzwang).
     if !in_check && depth >= 3 && ply > 0 && has_non_pawn_material(board, board.side_to_move) {
+        ctx.stats.null_move_attempts.fetch_add(1, Ordering::Relaxed);
         let null_board = board.make_null_move();
         ctx.game_history.push(null_board.hash);
         let mut child_pv = Vec::new();
-        let score = -negamax(&null_board, depth - 4, -beta, -beta + 1, ply + 1, &mut child_pv, ctx);
+        let score = -negamax(
+            &null_board,
+            depth - 4,
+            -beta,
+            -beta + 1,
+            ply + 1,
+            &mut child_pv,
+            ctx,
+        );
         ctx.game_history.pop();
         if ctx.stopped {
             return 0;
         }
         if score >= beta {
+            ctx.stats.null_move_cutoffs.fetch_add(1, Ordering::Relaxed);
             return score;
         }
     }
 
     let mut moves = generate_legal_moves(board);
     if moves.is_empty() {
-        return if in_check { -MATE_SCORE + ply as i32 } else { 0 };
+        return if in_check {
+            -MATE_SCORE + ply as i32
+        } else {
+            0
+        };
     }
     moves.sort_by_key(|mv| std::cmp::Reverse(move_score(mv, board, tt_move, ply, ctx)));
 
@@ -341,16 +423,44 @@ fn negamax(
         let score = if i == 0 {
             -negamax(&next, depth - 1, -beta, -alpha, ply + 1, &mut child_pv, ctx)
         } else {
-            let reduction = if depth >= 3 && i >= 4 && !mv.is_capture() && mv.promotion().is_none() && !in_check {
-                if i >= 10 { 2 } else { 1 }
+            let reduction = if depth >= 3
+                && i >= 4
+                && !mv.is_capture()
+                && mv.promotion().is_none()
+                && !in_check
+            {
+                ctx.stats.lmr_attempts.fetch_add(1, Ordering::Relaxed);
+                if i >= 10 {
+                    2
+                } else {
+                    1
+                }
             } else {
                 0
             };
-            let mut s = -negamax(&next, depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, &mut child_pv, ctx);
+            let mut s = -negamax(
+                &next,
+                depth - 1 - reduction,
+                -alpha - 1,
+                -alpha,
+                ply + 1,
+                &mut child_pv,
+                ctx,
+            );
             if !ctx.stopped && s > alpha && reduction > 0 {
-                s = -negamax(&next, depth - 1, -alpha - 1, -alpha, ply + 1, &mut child_pv, ctx);
+                ctx.stats.lmr_researches.fetch_add(1, Ordering::Relaxed);
+                s = -negamax(
+                    &next,
+                    depth - 1,
+                    -alpha - 1,
+                    -alpha,
+                    ply + 1,
+                    &mut child_pv,
+                    ctx,
+                );
             }
             if !ctx.stopped && s > alpha && s < beta {
+                ctx.stats.pvs_researches.fetch_add(1, Ordering::Relaxed);
                 s = -negamax(&next, depth - 1, -beta, -alpha, ply + 1, &mut child_pv, ctx);
             }
             s
@@ -373,6 +483,7 @@ fn negamax(
             alpha = best_score;
         }
         if alpha >= beta {
+            ctx.stats.beta_cutoffs.fetch_add(1, Ordering::Relaxed);
             if !mv.is_capture() {
                 ctx.store_killer(ply, mv);
                 ctx.bump_history(board.side_to_move, mv, depth);
@@ -388,7 +499,13 @@ fn negamax(
     } else {
         TTFlag::Exact
     };
-    ctx.tt.store(board.hash, depth, score_to_tt(best_score, ply), flag, Some(best_move));
+    ctx.tt.store(
+        board.hash,
+        depth,
+        score_to_tt(best_score, ply),
+        flag,
+        Some(best_move),
+    );
 
     best_score
 }
@@ -409,7 +526,11 @@ fn format_score(score: i32) -> String {
 fn print_info(depth: i32, seldepth: u8, score: i32, nodes: u64, elapsed_ms: u128, pv: &[Move]) {
     let ms = elapsed_ms.max(1);
     let nps = (nodes as u128 * 1000) / ms;
-    let pv_str = pv.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(" ");
+    let pv_str = pv
+        .iter()
+        .map(|m| m.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
     println!(
         "info depth {depth} seldepth {seldepth} score {} nodes {nodes} nps {nps} time {ms} pv {pv_str}",
         format_score(score)
@@ -439,7 +560,7 @@ fn iterative_deepening_one_thread(
     tt: &TranspositionTable,
     game_history: Vec<u64>,
     stop: &AtomicBool,
-    nodes: &AtomicU64,
+    stats: &SearchStats,
     is_main: bool,
 ) -> ThreadResult {
     let root_moves = generate_legal_moves(board);
@@ -448,7 +569,7 @@ fn iterative_deepening_one_thread(
     let mut last_completed_depth = 0;
 
     let mut ctx = SearchContext {
-        nodes,
+        stats,
         seldepth: 0,
         stop,
         hard_deadline: limits.hard_deadline,
@@ -481,7 +602,7 @@ fn iterative_deepening_one_thread(
                     depth,
                     ctx.seldepth,
                     score,
-                    ctx.nodes.load(Ordering::Relaxed),
+                    ctx.stats.nodes.load(Ordering::Relaxed),
                     start.elapsed().as_millis(),
                     &pv,
                 );
@@ -497,7 +618,11 @@ fn iterative_deepening_one_thread(
         depth += 1;
     }
 
-    ThreadResult { depth: last_completed_depth, score: best_score, best_move }
+    ThreadResult {
+        depth: last_completed_depth,
+        score: best_score,
+        best_move,
+    }
 }
 
 /// Lazy SMP: lanza `threads` búsquedas independientes sobre la misma
@@ -514,10 +639,11 @@ pub fn lazy_smp_search(
     threads: usize,
 ) -> (Move, i32) {
     let threads = threads.max(1);
-    let nodes = Arc::new(AtomicU64::new(0));
+    let stats = Arc::new(SearchStats::default());
 
     if threads == 1 {
-        let result = iterative_deepening_one_thread(&board, &limits, &tt, game_history, &stop, &nodes, true);
+        let result =
+            iterative_deepening_one_thread(&board, &limits, &tt, game_history, &stop, &stats, true);
         return (result.best_move, result.score);
     }
 
@@ -526,14 +652,15 @@ pub fn lazy_smp_search(
         for t in 0..threads {
             let tt = &tt;
             let stop = &stop;
-            let nodes = &nodes;
+            let stats = &stats;
             let history = game_history.clone();
             handles.push(scope.spawn(move || {
-                iterative_deepening_one_thread(&board, &limits, tt, history, stop, nodes, t == 0)
+                iterative_deepening_one_thread(&board, &limits, tt, history, stop, stats, t == 0)
             }));
         }
 
-        let mut results: Vec<ThreadResult> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let mut results: Vec<ThreadResult> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
         // Empatar en profundidad prefiere al hilo principal (índice 0): lo
         // conseguimos ordenando de forma estable y comparando solo por
         // profundidad (sort_by_key es estable, así que el primer índice con
@@ -549,6 +676,24 @@ pub fn lazy_smp_search(
             })
             .unwrap()
     })
+}
+
+pub fn search_fixed_depth_with_stats(
+    board: Board,
+    depth: i32,
+    tt: Arc<TranspositionTable>,
+    game_history: Vec<u64>,
+) -> (Move, i32, SearchStatsSnapshot) {
+    let stop = AtomicBool::new(false);
+    let stats = SearchStats::default();
+    let limits = SearchLimits {
+        max_depth: depth,
+        soft_deadline: Instant::now() + std::time::Duration::from_secs(86_400),
+        hard_deadline: Instant::now() + std::time::Duration::from_secs(86_400),
+    };
+    let result =
+        iterative_deepening_one_thread(&board, &limits, &tt, game_history, &stop, &stats, false);
+    (result.best_move, result.score, stats.snapshot())
 }
 
 #[cfg(test)]
@@ -579,11 +724,17 @@ mod tests {
         // al rival sin ningún movimiento legal.
         let fen = "6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1";
         let (mv, score) = search_fixed_depth(fen, 4);
-        assert!(score >= MATE_SCORE - MAX_PLY as i32, "no se detectó mate, score={score}");
+        assert!(
+            score >= MATE_SCORE - MAX_PLY as i32,
+            "no se detectó mate, score={score}"
+        );
 
         let board = Board::from_fen(fen).unwrap();
         let after = board.make_move(mv);
-        assert!(after.in_check(after.side_to_move), "el movimiento no da jaque: {mv}");
+        assert!(
+            after.in_check(after.side_to_move),
+            "el movimiento no da jaque: {mv}"
+        );
         assert!(
             generate_legal_moves(&after).is_empty(),
             "el movimiento no es mate, el rival todavía tiene jugadas: {mv}"
@@ -598,7 +749,10 @@ mod tests {
         // propio rey adyacente, aquí no hay ninguna razón para no capturar.
         let (mv, score) = search_fixed_depth("3r3k/8/8/8/8/8/8/3QK3 w - - 0 1", 3);
         assert_eq!(mv.to_string(), "d1d8");
-        assert!(score > 300, "score inesperadamente bajo tras ganar una torre limpia: {score}");
+        assert!(
+            score > 300,
+            "score inesperadamente bajo tras ganar una torre limpia: {score}"
+        );
     }
 
     #[test]
@@ -607,7 +761,11 @@ mod tests {
         // e8 (casillas adyacentes): capturarla con la dama perdería dama por
         // torre tras la recaptura del rey. El motor no debe caer en esta trampa.
         let (mv, _score) = search_fixed_depth("3rk3/8/8/8/8/8/8/3QK3 w - - 0 1", 4);
-        assert_ne!(mv.to_string(), "d1d8", "el motor cambió dama por torre innecesariamente");
+        assert_ne!(
+            mv.to_string(),
+            "d1d8",
+            "el motor cambió dama por torre innecesariamente"
+        );
     }
 
     #[test]
@@ -642,7 +800,10 @@ mod tests {
             hard_deadline: Instant::now() + Duration::from_secs(30),
         };
         let (mv, score) = lazy_smp_search(board, limits, tt, vec![board.hash], stop, 4);
-        assert!(score >= MATE_SCORE - MAX_PLY as i32, "no se detectó mate con 4 hilos, score={score}");
+        assert!(
+            score >= MATE_SCORE - MAX_PLY as i32,
+            "no se detectó mate con 4 hilos, score={score}"
+        );
         let after = board.make_move(mv);
         assert!(after.in_check(after.side_to_move));
         assert!(generate_legal_moves(&after).is_empty());
