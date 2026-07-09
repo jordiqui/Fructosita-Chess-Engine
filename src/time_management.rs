@@ -90,9 +90,13 @@ fn allocate_clock_time(
         .saturating_mul(INCREMENT_NUMERATOR)
         .checked_div(INCREMENT_DENOMINATOR)
         .unwrap_or(0);
-    let soft_ms = base_ms
-        .saturating_add(increment_budget_ms)
-        .clamp(MIN_CLOCK_ALLOCATION_MS, usable_ms);
+    let soft_ms = if usable_ms == 0 {
+        0
+    } else {
+        base_ms
+            .saturating_add(increment_budget_ms)
+            .clamp(MIN_CLOCK_ALLOCATION_MS, usable_ms)
+    };
     let hard_ms = soft_ms
         .saturating_mul(HARD_MULTIPLIER)
         .min(usable_ms)
@@ -198,6 +202,19 @@ mod tests {
         });
         assert!(allocation.hard_ms.unwrap() < 200);
         assert!(allocation.soft_ms.unwrap() > 0);
+        assert_ordered(allocation);
+    }
+
+    #[test]
+    fn zero_clock_does_not_panic_or_overflow() {
+        let allocation = allocate_time(TimeControlInput {
+            wtime_ms: Some(0),
+            winc_ms: Some(0),
+            ..base_input()
+        });
+        assert_eq!(allocation.reason, TimeAllocationReason::Clock);
+        assert_eq!(allocation.soft_ms, Some(0));
+        assert_eq!(allocation.hard_ms, Some(0));
         assert_ordered(allocation);
     }
 
