@@ -16,8 +16,8 @@ use crate::book::{Book, BookRng};
 use crate::movegen::{find_move, generate_legal_moves};
 use crate::perft::perft_divide;
 use crate::search::{self, SearchLimits};
+use crate::time_management::{allocate_time, TimeControlInput};
 use crate::tt::TranspositionTable;
-use crate::types::Color;
 use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -267,14 +267,16 @@ fn handle_go(line: &str, state: &mut EngineState) {
         }
     }
 
-    let mut wtime: Option<i64> = None;
-    let mut btime: Option<i64> = None;
-    let mut winc: i64 = 0;
-    let mut binc: i64 = 0;
-    let mut movestogo: Option<i64> = None;
-    let mut movetime: Option<i64> = None;
+    let mut wtime: Option<u64> = None;
+    let mut btime: Option<u64> = None;
+    let mut winc: Option<u64> = None;
+    let mut binc: Option<u64> = None;
+    let mut movestogo: Option<u64> = None;
+    let mut movetime: Option<u64> = None;
     let mut max_depth: i32 = 64;
+    let mut depth_limit: Option<i32> = None;
     let mut infinite = false;
+    let mut ponder = false;
 
     let mut i = 0;
     while i < tokens.len() {
@@ -288,11 +290,11 @@ fn handle_go(line: &str, state: &mut EngineState) {
                 i += 1;
             }
             "winc" => {
-                winc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                winc = tokens.get(i + 1).and_then(|s| s.parse().ok());
                 i += 1;
             }
             "binc" => {
-                binc = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+                binc = tokens.get(i + 1).and_then(|s| s.parse().ok());
                 i += 1;
             }
             "movestogo" => {
@@ -304,26 +306,38 @@ fn handle_go(line: &str, state: &mut EngineState) {
                 i += 1;
             }
             "depth" => {
-                max_depth = tokens.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(64);
+                depth_limit = tokens.get(i + 1).and_then(|s| s.parse().ok());
+                max_depth = depth_limit.unwrap_or(64);
                 i += 1;
             }
             "infinite" => infinite = true,
+            "ponder" => ponder = true,
             _ => {}
         }
         i += 1;
     }
 
     let now = Instant::now();
-    let (soft, hard) = compute_time_budget(
-        state.board.side_to_move,
-        wtime,
-        btime,
-        winc,
-        binc,
+    let allocation = allocate_time(TimeControlInput {
+        side_to_move: state.board.side_to_move,
+        wtime_ms: wtime,
+        btime_ms: btime,
+        winc_ms: winc,
+        binc_ms: binc,
         movestogo,
-        movetime,
+        movetime_ms: movetime,
+        depth: depth_limit,
         infinite,
-    );
+        ponder,
+    });
+    let soft = allocation
+        .soft_ms
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(86_400));
+    let hard = allocation
+        .hard_ms
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(86_400));
     let limits = SearchLimits {
         max_depth,
         soft_deadline: now + soft,
@@ -344,52 +358,6 @@ fn handle_go(line: &str, state: &mut EngineState) {
         io::stdout().flush().ok();
     });
     state.search_thread = Some(handle);
-}
-
-/// Calcula (límite blando, límite duro) de tiempo para la búsqueda.
-/// El límite blando es cuándo dejamos de *empezar* una nueva profundidad de
-/// profundización iterativa; el límite duro es un tope de seguridad que
-/// `negamax`/`quiescence` revisan periódicamente para cortar de inmediato.
-#[allow(clippy::too_many_arguments)]
-fn compute_time_budget(
-    side: Color,
-    wtime: Option<i64>,
-    btime: Option<i64>,
-    winc: i64,
-    binc: i64,
-    movestogo: Option<i64>,
-    movetime: Option<i64>,
-    infinite: bool,
-) -> (Duration, Duration) {
-    if infinite {
-        return (Duration::from_secs(3600), Duration::from_secs(3600));
-    }
-    if let Some(mt) = movetime {
-        let ms = (mt - 50).max(10) as u64;
-        return (Duration::from_millis(ms), Duration::from_millis(ms));
-    }
-
-    let (time_left, inc) = match side {
-        Color::White => (wtime, winc),
-        Color::Black => (btime, binc),
-    };
-
-    if let Some(t) = time_left {
-        let moves_left = movestogo.unwrap_or(30).max(1);
-        let safety = 50i64;
-        let usable = (t - safety).max(10);
-        let base = usable / moves_left + (inc * 8) / 10;
-        let soft = base.clamp(10, usable);
-        let hard = (soft * 3).min(usable);
-        return (
-            Duration::from_millis(soft as u64),
-            Duration::from_millis(hard as u64),
-        );
-    }
-
-    // Sin ningún control de tiempo especificado (uso manual desde terminal):
-    // un valor por defecto razonable para no pensar indefinidamente.
-    (Duration::from_millis(5000), Duration::from_millis(5000))
 }
 
 fn run_perft_command(board: &Board, depth: u32) {
