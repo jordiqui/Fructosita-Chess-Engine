@@ -1062,7 +1062,7 @@ mod tests {
         let book = Book::load(TEST_BOOK).unwrap();
         let board = Board::start_pos();
         let mut results = book.probe(&board);
-        results.sort_by(|a, b| b.1.cmp(&a.1)); // mayor peso primero
+        results.sort_by_key(|b| std::cmp::Reverse(b.1)); // mayor peso primero
         let as_strings: Vec<(String, u32)> =
             results.iter().map(|(m, w)| (m.to_string(), *w)).collect();
         assert_eq!(

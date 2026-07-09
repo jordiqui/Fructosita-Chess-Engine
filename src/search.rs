@@ -116,7 +116,11 @@ impl<'a> SearchContext<'a> {
     }
 
     fn check_time(&mut self) {
-        if self.stats.nodes.load(Ordering::Relaxed) % 2048 == 0
+        if self
+            .stats
+            .nodes
+            .load(Ordering::Relaxed)
+            .is_multiple_of(2048)
             && (self.stop.load(Ordering::Relaxed) || Instant::now() >= self.hard_deadline)
         {
             self.stopped = true;
