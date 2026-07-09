@@ -26,6 +26,7 @@ mod moves;
 mod perft;
 mod search;
 mod see;
+mod time_management;
 mod tt;
 mod types;
 mod uci;
