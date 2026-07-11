@@ -20,6 +20,7 @@ mod bitboard;
 mod board;
 mod book;
 mod commands;
+mod epd;
 mod eval;
 mod magic;
 mod magic_constants;
@@ -43,6 +44,7 @@ fn main() {
     match args.get(1).map(String::as_str) {
         Some("perft") => commands::run_cli_perft(&args[2..]),
         Some("bench") => commands::run_bench(&args[2..]),
+        Some("epd") => commands::run_epd(&args[2..]),
         Some("selfplay") => commands::run_selfplay(&args[2..]),
         Some("bench-attacks") => commands::run_bench_attacks(),
         _ => uci::run(),
