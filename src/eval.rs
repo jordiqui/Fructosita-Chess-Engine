@@ -113,9 +113,16 @@ fn game_phase(board: &Board) -> i32 {
 }
 
 fn material_and_pst(board: &Board, color: Color) -> (i32, i32) {
+    let (material, pst) = material_and_pst_components(board, color);
+    (material.0 + pst.0, material.1 + pst.1)
+}
+
+fn material_and_pst_components(board: &Board, color: Color) -> ((i32, i32), (i32, i32)) {
     let p = pst();
-    let mut mg = 0;
-    let mut eg = 0;
+    let mut material_mg = 0;
+    let mut material_eg = 0;
+    let mut pst_mg = 0;
+    let mut pst_eg = 0;
     for pt in ALL_PIECE_TYPES {
         let mut bb = board.pieces[color.index()][pt.index()];
         let value = piece_value(pt);
@@ -126,11 +133,13 @@ fn material_and_pst(board: &Board, color: Color) -> (i32, i32) {
             } else {
                 mirror(sq)
             };
-            mg += value + p.mg[pt.index()][idx as usize];
-            eg += value + p.eg[pt.index()][idx as usize];
+            material_mg += value;
+            material_eg += value;
+            pst_mg += p.mg[pt.index()][idx as usize];
+            pst_eg += p.eg[pt.index()][idx as usize];
         }
     }
-    (mg, eg)
+    ((material_mg, material_eg), (pst_mg, pst_eg))
 }
 
 fn mobility(board: &Board, color: Color) -> (i32, i32) {
@@ -164,10 +173,17 @@ fn mobility(board: &Board, color: Color) -> (i32, i32) {
 }
 
 fn pawn_structure(board: &Board, color: Color) -> (i32, i32) {
+    let (structure, passed) = pawn_structure_components(board, color);
+    (structure.0 + passed.0, structure.1 + passed.1)
+}
+
+fn pawn_structure_components(board: &Board, color: Color) -> ((i32, i32), (i32, i32)) {
     let own_pawns = board.pieces[color.index()][PieceType::Pawn.index()];
     let enemy_pawns = board.pieces[color.opposite().index()][PieceType::Pawn.index()];
     let mut mg = 0;
     let mut eg = 0;
+    let mut passed_mg = 0;
+    let mut passed_eg = 0;
 
     for file in 0u8..8 {
         let file_mask: u64 = FILE_A << file;
@@ -225,12 +241,12 @@ fn pawn_structure(board: &Board, color: Color) -> (i32, i32) {
                 7 - rank
             };
             let bonus = (advance as i32) * (advance as i32) * 3;
-            mg += bonus / 2;
-            eg += bonus;
+            passed_mg += bonus / 2;
+            passed_eg += bonus;
         }
     }
 
-    (mg, eg)
+    ((mg, eg), (passed_mg, passed_eg))
 }
 
 /// Heurística ligera: penaliza columnas abiertas/semi-abiertas junto al rey
@@ -264,12 +280,45 @@ fn king_safety(board: &Board, color: Color) -> i32 {
 
 /// Puntuación relativa a quien tiene el turno (positivo = bueno para el que mueve).
 pub fn evaluate(board: &Board) -> i32 {
+    breakdown(board).total
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EvalBreakdown {
+    pub material: i32,
+    pub piece_square: i32,
+    pub pawn_structure: i32,
+    pub passed_pawns: i32,
+    pub mobility: i32,
+    pub king_safety: i32,
+    pub tempo: i32,
+    pub total: i32,
+}
+
+fn taper(mg: i32, eg: i32, phase: i32) -> i32 {
+    (mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE
+}
+
+fn relative_to_move(board: &Board, white_minus_black: i32) -> i32 {
+    if board.side_to_move == Color::White {
+        white_minus_black
+    } else {
+        -white_minus_black
+    }
+}
+
+/// Desglose de la evaluación relativa a quien tiene el turno.
+pub fn breakdown(board: &Board) -> EvalBreakdown {
     let (w_mg, w_eg) = material_and_pst(board, Color::White);
     let (b_mg, b_eg) = material_and_pst(board, Color::Black);
+    let (w_material, w_pst) = material_and_pst_components(board, Color::White);
+    let (b_material, b_pst) = material_and_pst_components(board, Color::Black);
     let (wm_mg, wm_eg) = mobility(board, Color::White);
     let (bm_mg, bm_eg) = mobility(board, Color::Black);
     let (wp_mg, wp_eg) = pawn_structure(board, Color::White);
     let (bp_mg, bp_eg) = pawn_structure(board, Color::Black);
+    let (w_pawns, w_passed) = pawn_structure_components(board, Color::White);
+    let (b_pawns, b_passed) = pawn_structure_components(board, Color::Black);
     let wk = king_safety(board, Color::White);
     let bk = king_safety(board, Color::Black);
 
@@ -277,21 +326,66 @@ pub fn evaluate(board: &Board) -> i32 {
     let eg = (w_eg + wm_eg + wp_eg) - (b_eg + bm_eg + bp_eg);
 
     let phase = game_phase(board);
-    let score = (mg * phase + eg * (MAX_PHASE - phase)) / MAX_PHASE;
+    let score = taper(mg, eg, phase);
 
     // Convertimos primero a la perspectiva de quien mueve...
-    let relative = if board.side_to_move == Color::White {
-        score
-    } else {
-        -score
-    };
+    let relative = relative_to_move(board, score);
 
     // ...y SOLO DESPUÉS sumamos el bono de tempo: así queda garantizado que
     // beneficia a quien tiene el turno sin importar su color. Sumarlo antes
     // de la conversión (como se hacía originalmente) lo convertía en una
     // penalización para las negras en vez de un bono — bug real, detectado
     // por el test `evaluation_is_color_symmetric`.
-    relative + 10
+    EvalBreakdown {
+        material: relative_to_move(
+            board,
+            taper(
+                w_material.0 - b_material.0,
+                w_material.1 - b_material.1,
+                phase,
+            ),
+        ),
+        piece_square: relative_to_move(board, taper(w_pst.0 - b_pst.0, w_pst.1 - b_pst.1, phase)),
+        pawn_structure: relative_to_move(
+            board,
+            taper(w_pawns.0 - b_pawns.0, w_pawns.1 - b_pawns.1, phase),
+        ),
+        passed_pawns: relative_to_move(
+            board,
+            taper(w_passed.0 - b_passed.0, w_passed.1 - b_passed.1, phase),
+        ),
+        mobility: relative_to_move(board, taper(wm_mg - bm_mg, wm_eg - bm_eg, phase)),
+        king_safety: relative_to_move(board, wk - bk),
+        tempo: 10,
+        total: relative + 10,
+    }
+}
+
+pub fn trace(board: &Board) -> String {
+    let side_to_move = match board.side_to_move {
+        Color::White => "White",
+        Color::Black => "Black",
+    };
+    let breakdown = breakdown(board);
+    format!(
+        "eval side_to_move {side_to_move}\n\
+         eval material {}\n\
+         eval piece_square {}\n\
+         eval pawn_structure {}\n\
+         eval passed_pawns {}\n\
+         eval mobility {}\n\
+         eval king_safety {}\n\
+         eval tempo {}\n\
+         eval total {}\n",
+        breakdown.material,
+        breakdown.piece_square,
+        breakdown.pawn_structure,
+        breakdown.passed_pawns,
+        breakdown.mobility,
+        breakdown.king_safety,
+        breakdown.tempo,
+        breakdown.total
+    )
 }
 
 #[cfg(test)]
@@ -324,6 +418,46 @@ mod tests {
         let far = Board::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
         let close = Board::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         assert!(evaluate(&close) > evaluate(&far));
+    }
+
+    #[test]
+    fn breakdown_total_matches_evaluate_startpos() {
+        let board = Board::start_pos();
+        assert_eq!(breakdown(&board).total, evaluate(&board));
+    }
+
+    #[test]
+    fn breakdown_total_matches_evaluate_tactical_position() {
+        let board =
+            Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
+                .unwrap();
+        assert_eq!(breakdown(&board).total, evaluate(&board));
+    }
+
+    #[test]
+    fn trace_contains_total_and_terms() {
+        let trace = trace(&Board::start_pos());
+        for term in [
+            "eval side_to_move",
+            "eval material",
+            "eval piece_square",
+            "eval pawn_structure",
+            "eval passed_pawns",
+            "eval mobility",
+            "eval king_safety",
+            "eval tempo",
+            "eval total",
+        ] {
+            assert!(trace.contains(term), "trace missing {term}: {trace}");
+        }
+    }
+
+    #[test]
+    fn evaluation_trace_is_deterministic() {
+        let board =
+            Board::from_fen("r1bqk2r/2pp1ppp/p1n2n2/1pb1p3/4P3/1B3N2/PPPP1PPP/RNBQ1RK1 w kq - 0 8")
+                .unwrap();
+        assert_eq!(trace(&board), trace(&board));
     }
 
     /// Convierte un FEN en su "espejo": tablero volteado verticalmente,
