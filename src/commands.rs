@@ -224,3 +224,31 @@ pub fn run_bench_attacks() {
     let ratio = ray_elapsed.as_secs_f64() / magic_elapsed.as_secs_f64();
     println!("magic es {ratio:.2}x respecto a rayos en este micro-benchmark aislado");
 }
+
+pub fn run_epd(args: &[String]) {
+    let Some(path) = args.first() else {
+        eprintln!("uso: fructosita epd <archivo.epd> [depth N]");
+        std::process::exit(1);
+    };
+    let depth = if args.get(1).map(String::as_str) == Some("depth") {
+        args.get(2).and_then(|s| s.parse::<i32>().ok()).unwrap_or(8)
+    } else {
+        8
+    };
+    println!("epd file {path}");
+    println!("epd depth {depth}");
+    match crate::epd::run_file(path, depth) {
+        Ok(summary) => {
+            println!("epd positions {}", summary.positions);
+            println!("epd passed {}", summary.passed);
+            println!("epd failed {}", summary.failed);
+            if summary.failed > 0 {
+                std::process::exit(1);
+            }
+        }
+        Err(err) => {
+            eprintln!("epd error: {err}");
+            std::process::exit(1);
+        }
+    }
+}
