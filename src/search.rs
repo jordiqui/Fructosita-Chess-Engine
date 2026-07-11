@@ -30,6 +30,7 @@ pub struct SearchStats {
     pub tt_hits: AtomicU64,
     pub tt_cutoffs: AtomicU64,
     pub beta_cutoffs: AtomicU64,
+    pub beta_cutoffs_first_move: AtomicU64,
     pub null_move_attempts: AtomicU64,
     pub null_move_cutoffs: AtomicU64,
     pub lmr_attempts: AtomicU64,
@@ -45,6 +46,7 @@ pub struct SearchStatsSnapshot {
     pub tt_hits: u64,
     pub tt_cutoffs: u64,
     pub beta_cutoffs: u64,
+    pub beta_cutoffs_first_move: u64,
     pub null_move_attempts: u64,
     pub null_move_cutoffs: u64,
     pub lmr_attempts: u64,
@@ -61,6 +63,7 @@ impl SearchStats {
             tt_hits: self.tt_hits.load(Ordering::Relaxed),
             tt_cutoffs: self.tt_cutoffs.load(Ordering::Relaxed),
             beta_cutoffs: self.beta_cutoffs.load(Ordering::Relaxed),
+            beta_cutoffs_first_move: self.beta_cutoffs_first_move.load(Ordering::Relaxed),
             null_move_attempts: self.null_move_attempts.load(Ordering::Relaxed),
             null_move_cutoffs: self.null_move_cutoffs.load(Ordering::Relaxed),
             lmr_attempts: self.lmr_attempts.load(Ordering::Relaxed),
@@ -488,6 +491,11 @@ fn negamax(
         }
         if alpha >= beta {
             ctx.stats.beta_cutoffs.fetch_add(1, Ordering::Relaxed);
+            if i == 0 {
+                ctx.stats
+                    .beta_cutoffs_first_move
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             if !mv.is_capture() {
                 ctx.store_killer(ply, mv);
                 ctx.bump_history(board.side_to_move, mv, depth);

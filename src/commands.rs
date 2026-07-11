@@ -45,6 +45,7 @@ pub fn run_bench(args: &[String]) {
         total.tt_hits += stats.tt_hits;
         total.tt_cutoffs += stats.tt_cutoffs;
         total.beta_cutoffs += stats.beta_cutoffs;
+        total.beta_cutoffs_first_move += stats.beta_cutoffs_first_move;
         total.null_move_attempts += stats.null_move_attempts;
         total.null_move_cutoffs += stats.null_move_cutoffs;
         total.lmr_attempts += stats.lmr_attempts;
@@ -59,6 +60,11 @@ pub fn run_bench(args: &[String]) {
 
     let time_ms = start.elapsed().as_millis().max(1);
     let nps = (total.nodes as u128 * 1000) / time_ms;
+    let move_ordering_pct = if total.beta_cutoffs == 0 {
+        0.0
+    } else {
+        100.0 * total.beta_cutoffs_first_move as f64 / total.beta_cutoffs as f64
+    };
     println!("bench positions {}", fens.len());
     println!("bench depth {depth}");
     println!("bench nodes {}", total.nodes);
@@ -71,6 +77,11 @@ pub fn run_bench(args: &[String]) {
     println!("bench tt_hits {}", total.tt_hits);
     println!("bench tt_cutoffs {}", total.tt_cutoffs);
     println!("bench beta_cutoffs {}", total.beta_cutoffs);
+    println!(
+        "bench beta_cutoffs_first_move {}",
+        total.beta_cutoffs_first_move
+    );
+    println!("bench move_ordering_pct {move_ordering_pct:.2}");
     println!("bench null_move_attempts {}", total.null_move_attempts);
     println!("bench null_move_cutoffs {}", total.null_move_cutoffs);
     println!("bench lmr_attempts {}", total.lmr_attempts);
