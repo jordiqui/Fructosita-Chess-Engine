@@ -177,6 +177,138 @@ fn pawn_structure(board: &Board, color: Color) -> (i32, i32) {
     (structure.0 + passed.0, structure.1 + passed.1)
 }
 
+fn is_passed_pawn(enemy_pawns: u64, color: Color, sq: Square) -> bool {
+    let file = file_of(sq);
+    let rank = rank_of(sq);
+    let lo_file = file.saturating_sub(1);
+    let hi_file = (file + 1).min(7);
+
+    if color == Color::White {
+        for r in (rank + 1)..8 {
+            for f in lo_file..=hi_file {
+                if get_bit(enemy_pawns, make_square(f, r)) {
+                    return false;
+                }
+            }
+        }
+    } else {
+        for r in 0..rank {
+            for f in lo_file..=hi_file {
+                if get_bit(enemy_pawns, make_square(f, r)) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
+}
+
+fn is_protected_passed_pawn(own_pawns: u64, color: Color, sq: Square) -> bool {
+    let file = file_of(sq);
+    let rank = rank_of(sq);
+    let protector_rank = match color {
+        Color::White => rank.checked_sub(1),
+        Color::Black => {
+            if rank < 7 {
+                Some(rank + 1)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(r) = protector_rank {
+        if file > 0 && get_bit(own_pawns, make_square(file - 1, r)) {
+            return true;
+        }
+        if file < 7 && get_bit(own_pawns, make_square(file + 1, r)) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_connected_passed_pawn(own_pawns: u64, sq: Square) -> bool {
+    let file = file_of(sq);
+    let rank = rank_of(sq);
+    let lo_rank = rank.saturating_sub(1);
+    let hi_rank = (rank + 1).min(7);
+
+    if file > 0 {
+        for r in lo_rank..=hi_rank {
+            if get_bit(own_pawns, make_square(file - 1, r)) {
+                return true;
+            }
+        }
+    }
+    if file < 7 {
+        for r in lo_rank..=hi_rank {
+            if get_bit(own_pawns, make_square(file + 1, r)) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn promotion_rank_distance(color: Color, sq: Square) -> i32 {
+    match color {
+        Color::White => 7 - rank_of(sq) as i32,
+        Color::Black => rank_of(sq) as i32,
+    }
+}
+
+fn promotion_square(color: Color, sq: Square) -> Square {
+    let rank = match color {
+        Color::White => 7,
+        Color::Black => 0,
+    };
+    make_square(file_of(sq), rank)
+}
+
+fn king_distance_to_promotion_square(
+    board: &Board,
+    king_color: Color,
+    pawn_color: Color,
+    sq: Square,
+) -> i32 {
+    let king = board.king_square(king_color);
+    let promotion = promotion_square(pawn_color, sq);
+    let file_distance = (file_of(king) as i32 - file_of(promotion) as i32).abs();
+    let rank_distance = (rank_of(king) as i32 - rank_of(promotion) as i32).abs();
+    file_distance.max(rank_distance)
+}
+
+fn passed_pawn_bonus(board: &Board, own_pawns: u64, color: Color, sq: Square) -> (i32, i32) {
+    let advance = match color {
+        Color::White => rank_of(sq) as i32,
+        Color::Black => 7 - rank_of(sq) as i32,
+    };
+    let distance = promotion_rank_distance(color, sq);
+    let base = advance * advance * 3;
+    let advancement = (6 - distance).max(0) * 4;
+    let protected = if is_protected_passed_pawn(own_pawns, color, sq) {
+        10 + advancement / 2
+    } else {
+        0
+    };
+    let connected = if is_connected_passed_pawn(own_pawns, sq) {
+        8 + advancement / 2
+    } else {
+        0
+    };
+    let own_king_distance = king_distance_to_promotion_square(board, color, color, sq);
+    let enemy_king_distance = king_distance_to_promotion_square(board, color.opposite(), color, sq);
+    let king_race = (enemy_king_distance - own_king_distance).clamp(-3, 3) * 4;
+
+    let mg = base / 2 + advancement / 2 + protected / 2 + connected / 2 + king_race / 2;
+    let eg = base + advancement + protected + connected + king_race;
+    (mg.max(0), eg.max(0))
+}
+
 fn pawn_structure_components(board: &Board, color: Color) -> ((i32, i32), (i32, i32)) {
     let own_pawns = board.pieces[color.index()][PieceType::Pawn.index()];
     let enemy_pawns = board.pieces[color.opposite().index()][PieceType::Pawn.index()];
@@ -211,38 +343,10 @@ fn pawn_structure_components(board: &Board, color: Color) -> ((i32, i32), (i32, 
     let mut bb = own_pawns;
     while bb != EMPTY {
         let sq = pop_lsb(&mut bb);
-        let file = file_of(sq);
-        let rank = rank_of(sq);
-        let lo_file = file.saturating_sub(1);
-        let hi_file = (file + 1).min(7);
-
-        let mut blocked = false;
-        if color == Color::White {
-            for r in (rank + 1)..8 {
-                for f in lo_file..=hi_file {
-                    if get_bit(enemy_pawns, make_square(f, r)) {
-                        blocked = true;
-                    }
-                }
-            }
-        } else {
-            for r in 0..rank {
-                for f in lo_file..=hi_file {
-                    if get_bit(enemy_pawns, make_square(f, r)) {
-                        blocked = true;
-                    }
-                }
-            }
-        }
-        if !blocked {
-            let advance = if color == Color::White {
-                rank
-            } else {
-                7 - rank
-            };
-            let bonus = (advance as i32) * (advance as i32) * 3;
-            passed_mg += bonus / 2;
-            passed_eg += bonus;
+        if is_passed_pawn(enemy_pawns, color, sq) {
+            let (bonus_mg, bonus_eg) = passed_pawn_bonus(board, own_pawns, color, sq);
+            passed_mg += bonus_mg;
+            passed_eg += bonus_eg;
         }
     }
 
@@ -418,6 +522,58 @@ mod tests {
         let far = Board::from_fen("4k3/8/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
         let close = Board::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         assert!(evaluate(&close) > evaluate(&far));
+    }
+
+    #[test]
+    fn protected_passed_pawn_scores_higher_than_unprotected() {
+        let unprotected = Board::from_fen("4k3/8/8/3P4/8/8/2P5/4K3 w - - 0 1").unwrap();
+        let protected = Board::from_fen("4k3/8/8/3P4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&protected).passed_pawns > breakdown(&unprotected).passed_pawns,
+            "protected passer should increase passed_pawns term"
+        );
+    }
+
+    #[test]
+    fn connected_passed_pawns_score_higher_than_single_passer() {
+        let single = Board::from_fen("4k3/8/8/3P4/8/8/8/4K3 w - - 0 1").unwrap();
+        let connected = Board::from_fen("4k3/8/8/3PP3/8/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&connected).passed_pawns > breakdown(&single).passed_pawns,
+            "connected passers should increase passed_pawns term"
+        );
+    }
+
+    #[test]
+    fn king_supports_passed_pawn_more_than_enemy_king_blockades() {
+        let supported = Board::from_fen("4k3/8/3P4/3K4/8/8/8/8 w - - 0 1").unwrap();
+        let blockaded = Board::from_fen("3k4/8/3P4/8/8/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&supported).passed_pawns > breakdown(&blockaded).passed_pawns,
+            "own king support should outscore enemy king blockade in passed_pawns"
+        );
+    }
+
+    #[test]
+    fn breakdown_total_matches_evaluate_after_passed_pawn_enrichment() {
+        let board = Board::from_fen("4k3/8/3PP3/8/8/8/8/3K4 w - - 0 1").unwrap();
+        assert_eq!(breakdown(&board).total, evaluate(&board));
+    }
+
+    #[test]
+    fn trace_reports_enriched_passed_pawns() {
+        let board = Board::from_fen("4k3/8/3PP3/8/8/8/8/3K4 w - - 0 1").unwrap();
+        let passed = breakdown(&board).passed_pawns;
+        let trace = trace(&board);
+        assert!(passed > 0);
+        assert!(
+            trace.contains(&format!("eval passed_pawns {passed}")),
+            "trace should report enriched passed_pawns term: {trace}"
+        );
+        assert!(
+            trace.contains(&format!("eval total {}", breakdown(&board).total)),
+            "trace should report total consistently: {trace}"
+        );
     }
 
     #[test]
