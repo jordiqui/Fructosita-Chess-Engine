@@ -382,6 +382,137 @@ fn king_safety(board: &Board, color: Color) -> i32 {
     score
 }
 
+fn knight_outposts(board: &Board) -> i32 {
+    let white = knight_outposts_for_color(board, Color::White);
+    let black = knight_outposts_for_color(board, Color::Black);
+    relative_to_move(board, white - black)
+}
+
+fn knight_outposts_for_color(board: &Board, color: Color) -> i32 {
+    let mut score = 0;
+    let mut knights = board.pieces[color.index()][PieceType::Knight.index()];
+    while knights != EMPTY {
+        let sq = pop_lsb(&mut knights);
+        score += knight_outpost_bonus(board, color, sq);
+    }
+    score
+}
+
+fn knight_outpost_bonus(board: &Board, color: Color, sq: Square) -> i32 {
+    if !is_knight_outpost_square(color, sq) {
+        return 0;
+    }
+
+    let supported = is_supported_by_own_pawn(board, color, sq);
+    if !supported || is_attacked_by_enemy_pawn(board, color, sq) {
+        return 0;
+    }
+
+    let mut bonus = 12 + outpost_centrality_bonus(sq) + outpost_advancement_bonus(color, sq);
+    bonus += 10;
+    if !enemy_pawn_can_challenge_square(board, color, sq) {
+        bonus += 6;
+    }
+    bonus
+}
+
+fn is_knight_outpost_square(color: Color, sq: Square) -> bool {
+    let file = file_of(sq);
+    if !(2..=5).contains(&file) {
+        return false;
+    }
+
+    let relative_rank = relative_rank(color, sq);
+    (3..=5).contains(&relative_rank)
+}
+
+fn is_supported_by_own_pawn(board: &Board, color: Color, sq: Square) -> bool {
+    let pawns = board.pieces[color.index()][PieceType::Pawn.index()];
+    let file = file_of(sq);
+    let rank = rank_of(sq);
+    let support_rank = match color {
+        Color::White => rank.checked_sub(1),
+        Color::Black => {
+            if rank < 7 {
+                Some(rank + 1)
+            } else {
+                None
+            }
+        }
+    };
+
+    if let Some(r) = support_rank {
+        if file > 0 && get_bit(pawns, make_square(file - 1, r)) {
+            return true;
+        }
+        if file < 7 && get_bit(pawns, make_square(file + 1, r)) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_attacked_by_enemy_pawn(board: &Board, color: Color, sq: Square) -> bool {
+    is_supported_by_own_pawn(board, color.opposite(), sq)
+}
+
+fn enemy_pawn_can_challenge_square(board: &Board, color: Color, sq: Square) -> bool {
+    let enemy_pawns = board.pieces[color.opposite().index()][PieceType::Pawn.index()];
+    let file = file_of(sq);
+    let rank = rank_of(sq);
+
+    for challenge_file in file.saturating_sub(1)..=(file + 1).min(7) {
+        if challenge_file == file {
+            continue;
+        }
+        match color {
+            Color::White => {
+                if rank < 6 && get_bit(enemy_pawns, make_square(challenge_file, rank + 2)) {
+                    return true;
+                }
+                if rank == 3 && get_bit(enemy_pawns, make_square(challenge_file, 6)) {
+                    return true;
+                }
+            }
+            Color::Black => {
+                if rank > 1 && get_bit(enemy_pawns, make_square(challenge_file, rank - 2)) {
+                    return true;
+                }
+                if rank == 4 && get_bit(enemy_pawns, make_square(challenge_file, 1)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+fn outpost_centrality_bonus(sq: Square) -> i32 {
+    match file_of(sq) {
+        3 | 4 => 8,
+        2 | 5 => 4,
+        _ => 0,
+    }
+}
+
+fn outpost_advancement_bonus(color: Color, sq: Square) -> i32 {
+    match relative_rank(color, sq) {
+        5 => 8,
+        4 => 5,
+        3 => 2,
+        _ => 0,
+    }
+}
+
+fn relative_rank(color: Color, sq: Square) -> u8 {
+    match color {
+        Color::White => rank_of(sq),
+        Color::Black => 7 - rank_of(sq),
+    }
+}
+
 /// Puntuación relativa a quien tiene el turno (positivo = bueno para el que mueve).
 pub fn evaluate(board: &Board) -> i32 {
     breakdown(board).total
@@ -393,6 +524,7 @@ pub struct EvalBreakdown {
     pub piece_square: i32,
     pub pawn_structure: i32,
     pub passed_pawns: i32,
+    pub knight_outposts: i32,
     pub mobility: i32,
     pub king_safety: i32,
     pub tempo: i32,
@@ -425,6 +557,7 @@ pub fn breakdown(board: &Board) -> EvalBreakdown {
     let (b_pawns, b_passed) = pawn_structure_components(board, Color::Black);
     let wk = king_safety(board, Color::White);
     let bk = king_safety(board, Color::Black);
+    let outposts = knight_outposts(board);
 
     let mg = (w_mg + wm_mg + wp_mg + wk) - (b_mg + bm_mg + bp_mg + bk);
     let eg = (w_eg + wm_eg + wp_eg) - (b_eg + bm_eg + bp_eg);
@@ -458,10 +591,11 @@ pub fn breakdown(board: &Board) -> EvalBreakdown {
             board,
             taper(w_passed.0 - b_passed.0, w_passed.1 - b_passed.1, phase),
         ),
+        knight_outposts: outposts,
         mobility: relative_to_move(board, taper(wm_mg - bm_mg, wm_eg - bm_eg, phase)),
         king_safety: relative_to_move(board, wk - bk),
         tempo: 10,
-        total: relative + 10,
+        total: relative + outposts + 10,
     }
 }
 
@@ -477,6 +611,7 @@ pub fn trace(board: &Board) -> String {
          eval piece_square {}\n\
          eval pawn_structure {}\n\
          eval passed_pawns {}\n\
+         eval knight_outposts {}\n\
          eval mobility {}\n\
          eval king_safety {}\n\
          eval tempo {}\n\
@@ -485,6 +620,7 @@ pub fn trace(board: &Board) -> String {
         breakdown.piece_square,
         breakdown.pawn_structure,
         breakdown.passed_pawns,
+        breakdown.knight_outposts,
         breakdown.mobility,
         breakdown.king_safety,
         breakdown.tempo,
@@ -561,6 +697,12 @@ mod tests {
     }
 
     #[test]
+    fn breakdown_total_matches_evaluate_after_knight_outposts() {
+        let board = Board::from_fen("4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(breakdown(&board).total, evaluate(&board));
+    }
+
+    #[test]
     fn trace_reports_enriched_passed_pawns() {
         let board = Board::from_fen("4k3/8/3PP3/8/8/8/8/3K4 w - - 0 1").unwrap();
         let passed = breakdown(&board).passed_pawns;
@@ -573,6 +715,48 @@ mod tests {
         assert!(
             trace.contains(&format!("eval total {}", breakdown(&board).total)),
             "trace should report total consistently: {trace}"
+        );
+    }
+
+    #[test]
+    fn trace_reports_knight_outposts() {
+        let board = Board::from_fen("4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        let outposts = breakdown(&board).knight_outposts;
+        let trace = trace(&board);
+        assert!(outposts > 0);
+        assert!(
+            trace.contains(&format!("eval knight_outposts {outposts}")),
+            "trace should report knight_outposts term: {trace}"
+        );
+    }
+
+    #[test]
+    fn supported_knight_outpost_scores_above_unsupported_knight() {
+        let unsupported = Board::from_fen("4k3/8/8/3N4/8/8/8/4K3 w - - 0 1").unwrap();
+        let supported = Board::from_fen("4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&supported).knight_outposts > breakdown(&unsupported).knight_outposts,
+            "supported knight outpost should outscore unsupported knight"
+        );
+    }
+
+    #[test]
+    fn enemy_pawn_challenge_reduces_or_removes_outpost_bonus() {
+        let secure = Board::from_fen("4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        let challenged = Board::from_fen("4k3/2p5/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&challenged).knight_outposts < breakdown(&secure).knight_outposts,
+            "enemy pawn challenge should reduce knight outpost bonus"
+        );
+    }
+
+    #[test]
+    fn central_outpost_scores_above_rim_knight() {
+        let rim = Board::from_fen("4k3/8/8/8/N7/1P6/8/4K3 w - - 0 1").unwrap();
+        let central = Board::from_fen("4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1").unwrap();
+        assert!(
+            breakdown(&central).knight_outposts > breakdown(&rim).knight_outposts,
+            "central outpost should outscore rim knight"
         );
     }
 
@@ -599,6 +783,7 @@ mod tests {
             "eval piece_square",
             "eval pawn_structure",
             "eval passed_pawns",
+            "eval knight_outposts",
             "eval mobility",
             "eval king_safety",
             "eval tempo",
@@ -690,5 +875,17 @@ mod tests {
                 "evaluación no simétrica entre colores para: {fen}"
             );
         }
+    }
+
+    #[test]
+    fn black_white_symmetry_for_knight_outposts() {
+        let fen = "4k3/8/8/3N4/2P5/8/8/4K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let mirrored = Board::from_fen(&mirror_fen(fen)).unwrap();
+        assert_eq!(
+            breakdown(&board).knight_outposts,
+            breakdown(&mirrored).knight_outposts,
+            "knight outpost evaluation should be color-symmetric"
+        );
     }
 }
